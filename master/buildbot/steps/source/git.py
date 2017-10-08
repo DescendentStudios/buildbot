@@ -76,7 +76,7 @@ class Git(Source):
     """ Class for Git with all the smarts """
     name = 'git'
     renderables = ["repourl", "reference", "branch",
-                   "codebase", "mode", "method", "origin"]
+                   "codebase", "mode", "method", "origin", "lfs"]
 
     def __init__(self, repourl=None, branch='HEAD', mode='incremental', method=None,
                  reference=None, submodules=False, shallow=False, progress=False, retryFetch=False,
@@ -104,6 +104,7 @@ class Git(Source):
         @type reference: string
         @param reference: If available use a reference repo.
                           Uses `--reference` in git command. Refer `git clone --help`
+
         @type  progress: boolean
         @param progress: Pass the --progress option when fetching. This
                          can solve long fetches getting killed due to
@@ -143,6 +144,7 @@ class Git(Source):
         self.supportsSubmoduleCheckout = True
         self.srcdir = 'source'
         self.origin = origin
+        self.lfs = False
         Source.__init__(self, **kwargs)
         if not self.repourl:
             bbconfig.error("Git: must provide repourl.")
@@ -168,10 +170,14 @@ class Git(Source):
         self.stdio_log = self.addLogForRemoteCommands("stdio")
 
         try:
-            gitInstalled = yield self.checkBranchSupport()
+            gitInstalled = yield self.checkGitSupport()
 
             if not gitInstalled:
                 raise WorkerTooOldError("git is not installed on worker")
+
+            # auto-detect LFS support
+            self.lfs = yield self.checkGitLFSSupport()
+            log.msg("GitLFS status: %s" % (self.lfs) )
 
             patched = yield self.sourcedirIsPatched()
 
@@ -183,6 +189,7 @@ class Git(Source):
                 yield self.patch(None, patch=patch)
             yield self.parseGotRevision()
             res = yield self.parseCommitDescription()
+
             yield self.finish(res)
         except Exception as e:
             yield self.failed(e)
@@ -418,6 +425,11 @@ class Git(Source):
         abandonOnFailure = not self.retryFetch and not self.clobberOnFailure
         res = yield self._dovccmd(command, abandonOnFailure)
 
+        # since reset replaces LFS binaries with pointer files, must lfs checkout to get back binaries
+        if res == RC_SUCCESS and self.lfs:
+            command = ['lfs', 'checkout']
+            res = yield self._dovccmd(command, abandonOnFailure)
+
         # Rename the branch if needed.
         if res == RC_SUCCESS and self.branch != 'HEAD':
             # Ignore errors
@@ -446,7 +458,14 @@ class Git(Source):
     def _clone(self, shallowClone):
         """Retry if clone failed"""
 
-        command = ['clone']
+        command = []
+
+        # Use LFS clone to get binaries also
+        if self.lfs:
+            command += ['lfs', 'clone']
+        else:
+            command += ['clone']
+
         switchToBranch = False
         if self.supportsBranch and self.branch != 'HEAD':
             if self.branch.startswith('refs/'):
@@ -579,7 +598,7 @@ class Git(Source):
             return 'fresh'
 
     @defer.inlineCallbacks
-    def checkBranchSupport(self):
+    def checkGitSupport(self):
         stdout = yield self._dovccmd(['--version'], collectStdout=True)
 
         gitInstalled = False
@@ -595,6 +614,15 @@ class Git(Source):
         if LooseVersion(version) < LooseVersion("1.7.8"):
             self.supportsSubmoduleCheckout = False
         defer.returnValue(gitInstalled)
+
+    @defer.inlineCallbacks
+    def checkGitLFSSupport(self):
+        stdout = yield self._dovccmd(['lfs', 'env'], collectStdout=True)
+
+        lfsInstalled = False
+        if 'git-lfs' in stdout:
+            lfsInstalled = True
+        defer.returnValue(lfsInstalled)
 
     @defer.inlineCallbacks
     def applyPatch(self, patch):
