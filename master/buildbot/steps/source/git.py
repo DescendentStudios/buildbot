@@ -425,7 +425,11 @@ class Git(Source):
         abandonOnFailure = not self.retryFetch and not self.clobberOnFailure
         res = yield self._dovccmd(command, abandonOnFailure)
 
-        # since reset replaces LFS binaries with pointer files, must lfs checkout to get back binaries
+        # since reset replaces LFS binaries with pointer files, must lfs fetch and checkout to get back binaries
+        if res == RC_SUCCESS and self.lfs:
+            command = ['lfs', 'fetch']
+            res = yield self._dovccmd(command, abandonOnFailure)
+
         if res == RC_SUCCESS and self.lfs:
             command = ['lfs', 'checkout']
             res = yield self._dovccmd(command, abandonOnFailure)
